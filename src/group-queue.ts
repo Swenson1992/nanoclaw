@@ -53,6 +53,14 @@ export class GroupQueue {
     return state;
   }
 
+  getStatus(): { activeCount: number; maxConcurrent: number; waitingCount: number } {
+    return {
+      activeCount: this.activeCount,
+      maxConcurrent: MAX_CONCURRENT_CONTAINERS,
+      waitingCount: this.waitingGroups.length,
+    };
+  }
+
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
   }

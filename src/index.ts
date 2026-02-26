@@ -12,6 +12,7 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import { TelegramChannel, initBotPool } from './channels/telegram.js';
+import type { SystemStatus } from './channels/telegram.js';
 import { WhatsAppChannel } from './channels/whatsapp.js';
 import {
   ContainerOutput,
@@ -58,6 +59,7 @@ let messageLoopRunning = false;
 let whatsapp: WhatsAppChannel;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+const startTime = Date.now();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -476,6 +478,19 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
+    getSystemStatus: (): SystemStatus => {
+      const qs = queue.getStatus();
+      const tasks = getAllTasks();
+      return {
+        uptime: Date.now() - startTime,
+        activeContainers: qs.activeCount,
+        maxContainers: qs.maxConcurrent,
+        waitingContainers: qs.waitingCount,
+        channelCount: channels.length,
+        groupCount: Object.keys(registeredGroups).length,
+        taskCount: tasks.filter((t) => t.status === 'active').length,
+      };
+    },
   };
 
   // Create and connect channels

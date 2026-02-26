@@ -1,6 +1,7 @@
 import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { getAllTasks } from '../db.js';
 import { logger } from '../logger.js';
 import {
   Channel,
@@ -9,10 +10,21 @@ import {
   RegisteredGroup,
 } from '../types.js';
 
+export interface SystemStatus {
+  uptime: number;
+  activeContainers: number;
+  maxContainers: number;
+  waitingContainers: number;
+  channelCount: number;
+  groupCount: number;
+  taskCount: number;
+}
+
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  getSystemStatus?: () => SystemStatus;
 }
 
 export class TelegramChannel implements Channel {
@@ -48,6 +60,86 @@ export class TelegramChannel implements Channel {
     // Command to check bot status
     this.bot.command('ping', (ctx) => {
       ctx.reply(`${ASSISTANT_NAME} is online.`);
+    });
+
+    // Help command — list all available commands
+    this.bot.command('help', (ctx) => {
+      ctx.reply(
+        [
+          `*${ASSISTANT_NAME} Commands*`,
+          '',
+          '/help — List all available commands',
+          '/ping — Check if the bot is online',
+          '/status — Uptime, containers, groups, tasks',
+          '/groups — List registered groups',
+          '/tasks — List active scheduled tasks',
+          '/chatid — Get this chat\'s registration ID',
+        ].join('\n'),
+        { parse_mode: 'Markdown' },
+      );
+    });
+
+    // Status command — system overview
+    this.bot.command('status', (ctx) => {
+      const status = this.opts.getSystemStatus?.();
+      if (!status) {
+        ctx.reply('Status not available.');
+        return;
+      }
+      const uptimeH = (status.uptime / 3_600_000).toFixed(1);
+      ctx.reply(
+        [
+          `*${ASSISTANT_NAME} Status*`,
+          '',
+          `Uptime: ${uptimeH}h`,
+          `Containers: ${status.activeContainers}/${status.maxContainers} active` +
+            (status.waitingContainers > 0
+              ? ` (${status.waitingContainers} waiting)`
+              : ''),
+          `Channels: ${status.channelCount}`,
+          `Groups: ${status.groupCount}`,
+          `Tasks: ${status.taskCount}`,
+        ].join('\n'),
+        { parse_mode: 'Markdown' },
+      );
+    });
+
+    // Groups command — list registered groups
+    this.bot.command('groups', (ctx) => {
+      const groups = this.opts.registeredGroups();
+      const entries = Object.values(groups);
+      if (entries.length === 0) {
+        ctx.reply('No registered groups.');
+        return;
+      }
+      const lines = entries.map(
+        (g) => `• ${g.name} — \`${g.folder}\``,
+      );
+      ctx.reply(
+        [`*Registered Groups (${entries.length})*`, '', ...lines].join('\n'),
+        { parse_mode: 'Markdown' },
+      );
+    });
+
+    // Tasks command — list active scheduled tasks
+    this.bot.command('tasks', (ctx) => {
+      const tasks = getAllTasks().filter((t) => t.status === 'active');
+      if (tasks.length === 0) {
+        ctx.reply('No active scheduled tasks.');
+        return;
+      }
+      const lines = tasks.map((t) => {
+        const preview =
+          t.prompt.length > 50 ? t.prompt.slice(0, 47) + '...' : t.prompt;
+        const next = t.next_run
+          ? new Date(t.next_run).toLocaleString()
+          : 'N/A';
+        return `• *${t.schedule_type}* — ${preview}\n  Next: ${next}`;
+      });
+      ctx.reply(
+        [`*Active Tasks (${tasks.length})*`, '', ...lines].join('\n'),
+        { parse_mode: 'Markdown' },
+      );
     });
 
     this.bot.on('message:text', async (ctx) => {
@@ -89,6 +181,21 @@ export class TelegramChannel implements Channel {
         if (isBotMentioned && !TRIGGER_PATTERN.test(content)) {
           content = `@${ASSISTANT_NAME} ${content}`;
         }
+      }
+
+      // Extract reply-to-message context so the agent knows what's being referenced
+      const replyMsg = ctx.message.reply_to_message;
+      if (replyMsg) {
+        const replyFrom =
+          replyMsg.from?.first_name ||
+          replyMsg.from?.username ||
+          replyMsg.from?.id?.toString() ||
+          'Unknown';
+        const replyText =
+          (replyMsg as any).text ||
+          (replyMsg as any).caption ||
+          '[non-text message]';
+        content = `[Replying to ${replyFrom}: "${replyText}"]\n${content}`;
       }
 
       // Store chat metadata for discovery
@@ -183,6 +290,30 @@ export class TelegramChannel implements Channel {
           console.log(
             `  Send /chatid to the bot to get a chat's registration ID\n`,
           );
+
+          // Register command menu so commands appear in Telegram's "/" menu
+          this.bot!.api
+            .setMyCommands([
+              { command: 'help', description: 'List all available commands' },
+              { command: 'ping', description: 'Check if the bot is online' },
+              {
+                command: 'status',
+                description: 'Uptime, containers, groups, tasks',
+              },
+              { command: 'groups', description: 'List registered groups' },
+              {
+                command: 'tasks',
+                description: 'List active scheduled tasks',
+              },
+              {
+                command: 'chatid',
+                description: "Get this chat's registration ID",
+              },
+            ])
+            .catch((err) =>
+              logger.warn({ err }, 'Failed to register Telegram command menu'),
+            );
+
           resolve();
         },
       });
